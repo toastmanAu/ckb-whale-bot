@@ -1,0 +1,6 @@
+config.json
+.last-block
+*.log
+nohup.out
+whale-bot.pid
+whale-bot.service

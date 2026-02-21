@@ -1,0 +1,19 @@
+[Unit]
+Description=CKB Whale Alert Bot
+Documentation=https://github.com/toastmanAu/ckb-node-dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=phill
+WorkingDirectory=/home/phill/ckb-whale-bot
+ExecStart=/usr/bin/node /home/phill/ckb-whale-bot/whale-bot.js
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ckb-whale-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -72,7 +72,7 @@ async function fetchCkbPrice() {
 // Falls back to 10M CKB if price unavailable.
 function whaleThresholdShannons(priceUsd) {
   if (!priceUsd || priceUsd <= 0) {
-    return 10_000_000n * SHANNON_PER_CKB;  // fallback: 10M CKB
+    return 50_000_000n * SHANNON_PER_CKB;  // fallback: 50M CKB (no price available)
   }
   const ckbNeeded = Math.ceil(WHALE_USD_THRESHOLD / priceUsd);
   return BigInt(ckbNeeded) * SHANNON_PER_CKB;

@@ -35,11 +35,48 @@ if (!BOT_TOKEN || !CHAT_ID) {
   process.exit(1);
 }
 
-const SHANNON_PER_CKB = 100_000_000n;            // 1 CKB = 1e8 shannons
-const WHALE_THRESHOLD = 10_000_000n * SHANNON_PER_CKB; // 10M CKB in shannons
+const SHANNON_PER_CKB    = 100_000_000n;  // 1 CKB = 1e8 shannons
+const WHALE_USD_THRESHOLD = 200_000;      // alert if tx ≥ $200,000 USD
 
-const POLL_INTERVAL_MS = 8_000;                   // just under ~6s block time
+const POLL_INTERVAL_MS = 8_000;           // just under ~6s block time
 const STATE_FILE       = path.join(__dirname, '.last-block');
+
+// ── CKB Price (CoinGecko, cached 5 min) ──────────────────────────────────────
+
+let ckbPriceUsd   = null;   // null until first fetch
+let priceFetchedAt = 0;
+const PRICE_TTL_MS = 5 * 60 * 1000;
+
+async function fetchCkbPrice() {
+  const now = Date.now();
+  if (ckbPriceUsd !== null && (now - priceFetchedAt) < PRICE_TTL_MS) {
+    return ckbPriceUsd;
+  }
+  try {
+    const data = await request(
+      'https://api.coingecko.com/api/v3/simple/price?ids=nervos-network&vs_currencies=usd'
+    );
+    const price = data?.['nervos-network']?.usd;
+    if (typeof price === 'number' && price > 0) {
+      ckbPriceUsd    = price;
+      priceFetchedAt = now;
+      console.log(`[price] CKB = $${price.toFixed(6)} USD`);
+    }
+  } catch (e) {
+    console.warn(`[price] CoinGecko fetch failed: ${e.message}`);
+  }
+  return ckbPriceUsd;
+}
+
+// Returns the CKB (in shannons) equivalent of WHALE_USD_THRESHOLD at current price.
+// Falls back to 10M CKB if price unavailable.
+function whaleThresholdShannons(priceUsd) {
+  if (!priceUsd || priceUsd <= 0) {
+    return 10_000_000n * SHANNON_PER_CKB;  // fallback: 10M CKB
+  }
+  const ckbNeeded = Math.ceil(WHALE_USD_THRESHOLD / priceUsd);
+  return BigInt(ckbNeeded) * SHANNON_PER_CKB;
+}
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -142,12 +179,23 @@ function truncHash(hash, len = 12) {
   return hash.slice(0, 2 + len) + '...' + hash.slice(-6);
 }
 
-function buildAlert({ hash, blockNum, outputCKB, inputCount, outputCount, outputs }) {
+function buildAlert({ hash, blockNum, outputCKB, inputCount, outputCount, outputs, priceUsd }) {
   const ckbAmount  = formatCKB(outputCKB);
   const millAmount = formatMillions(outputCKB);
 
   // Largest single output
-  const biggest    = outputs.reduce((a, b) => (b > a ? b : a), 0n);
+  const biggest = outputs.reduce((a, b) => (b > a ? b : a), 0n);
+
+  // USD value
+  let usdLine = '';
+  if (priceUsd && priceUsd > 0) {
+    const ckbCount  = Number(outputCKB / SHANNON_PER_CKB);
+    const usdValue  = ckbCount * priceUsd;
+    const usdStr    = usdValue >= 1_000_000
+      ? `$${(usdValue / 1_000_000).toFixed(2)}M`
+      : `$${Math.round(usdValue).toLocaleString('en-AU')}`;
+    usdLine = `💵 USD value: <code>~${usdStr}</code> @ $${priceUsd.toFixed(4)}/CKB\n`;
+  }
 
   return [
     `🐋 <b>CKB Whale Alert</b>`,
@@ -155,12 +203,13 @@ function buildAlert({ hash, blockNum, outputCKB, inputCount, outputCount, output
     `<b>${millAmount} CKB</b> moved on-chain`,
     ``,
     `💰 Total output: <code>${ckbAmount} CKB</code>`,
+    usdLine.trimEnd(),
     `📦 Largest output: <code>${formatCKB(biggest)} CKB</code>`,
     `🔀 Inputs → Outputs: ${inputCount} → ${outputCount}`,
     `📏 Block: <code>${blockNum.toLocaleString('en-AU')}</code>`,
     ``,
     `🔗 <a href="${EXPLORER_TX}/${hash}">${truncHash(hash)}</a>`,
-  ].join('\n');
+  ].filter(l => l !== '').join('\n');
 }
 
 // ── Self-transfer detection ──────────────────────────────────────────────────
@@ -209,6 +258,15 @@ async function processBlock(blockNum) {
 
   const txs = block.transactions;
 
+  // Fetch current price once per block (cached 5 min)
+  const priceUsd = await fetchCkbPrice();
+  const threshold = whaleThresholdShannons(priceUsd);
+
+  const threshCkb = Number(threshold / SHANNON_PER_CKB).toLocaleString('en-AU');
+  const threshUsd = priceUsd
+    ? ` (~$${WHALE_USD_THRESHOLD.toLocaleString('en-AU')} USD @ $${priceUsd.toFixed(4)}/CKB)`
+    : ' (price unavailable, using 10M CKB fallback)';
+
   // tx[0] is always the cellbase (miner reward) — skip it
   for (let i = 1; i < txs.length; i++) {
     const tx = txs[i];
@@ -216,7 +274,7 @@ async function processBlock(blockNum) {
     const outputs = tx.outputs.map((o) => BigInt(o.capacity));
     const total   = outputs.reduce((a, b) => a + b, 0n);
 
-    if (total < WHALE_THRESHOLD) continue;
+    if (total < threshold) continue;
 
     // Filter self-transfers (change-only / consolidation txs)
     if (await isSelfTransfer(tx)) {
@@ -231,9 +289,10 @@ async function processBlock(blockNum) {
       inputCount : tx.inputs.length,
       outputCount: tx.outputs.length,
       outputs,
+      priceUsd,
     });
 
-    console.log(`\n🐋 WHALE  block=${blockNum}  tx=${tx.hash}  ${formatCKB(total)} CKB`);
+    console.log(`\n🐋 WHALE  block=${blockNum}  tx=${tx.hash}  ${formatCKB(total)} CKB${threshUsd}`);
 
     try {
       await sendTelegram(msg);
@@ -286,15 +345,15 @@ async function poll() {
 console.log('🐋 CKB Whale Alert Bot starting...');
 console.log(`   Node  : ${CKB_RPC}`);
 console.log(`   Chat  : ${CHAT_ID} (@NervosUnofficial)`);
-console.log(`   Thresh: 10,000,000 CKB`);
+console.log(`   Thresh: $${WHALE_USD_THRESHOLD.toLocaleString('en-AU')} USD (CKB equiv fetched live from CoinGecko)`);
 console.log(`   Poll  : every ${POLL_INTERVAL_MS / 1000}s`);
 console.log('');
 
 // Send startup notification (once)
 sendTelegram(
-  '🐋 <b>CKB Whale Alert Bot online</b>\n' +
-  'Monitoring transactions ≥ 10,000,000 CKB\n' +
-  '<i>Source: local full node</i>'
+  `🐋 <b>CKB Whale Alert Bot online</b>\n` +
+  `Monitoring transactions ≥ $${WHALE_USD_THRESHOLD.toLocaleString('en-AU')} USD in CKB\n` +
+  `<i>Threshold auto-adjusts with live CKB price (CoinGecko)</i>`
 ).then(() => console.log('[startup] Telegram ping sent'))
   .catch((e) => console.error('[startup] Telegram ping failed:', e.message));
 

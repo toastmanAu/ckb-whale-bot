@@ -1,64 +1,90 @@
-# CKB Whale Alert Bot 🐋
+# ckb-whale-bot
 
-Monitors a local [Nervos CKB](https://nervos.org) full node for large on-chain transactions and sends alerts to a Telegram chat.
+Telegram alert bot for large CKB transfers on the Nervos Network.
 
-## Features
+Monitors a local CKB full node for transactions above a configurable USD threshold and sends alerts to a Telegram group.
 
-- Alerts on any transaction with total output ≥ 10,000,000 CKB
-- Skips coinbase (miner reward) transactions
-- Filters self-transfers — ignores consolidation/change transactions where all outputs return to the same addresses as the inputs
-- Crash-resilient polling loop with graceful shutdown
-- Persists last-seen block across restarts
+---
 
-## Requirements
+## What it does
 
-- Node.js 16+
-- A synced CKB full node with RPC accessible
-- A Telegram bot token and target chat ID
+- **Watches your local CKB node** — polls new blocks as they arrive (~6s intervals)
+- **USD-value threshold** — live CKB price from CoinGecko (5-minute cache), falls back to raw CKB amount if unavailable
+- **Self-transfer filtering** — skips transactions where all outputs go back to the same lock args
+- **Cellbase skipping** — ignores miner reward transactions
+- **Telegram alerts** — sends to a configured group/channel
+
+---
 
 ## Setup
 
 ```bash
+git clone https://github.com/toastmanAu/ckb-whale-bot
+cd ckb-whale-bot
 cp config.example.json config.json
-# Edit config.json with your values
+# Edit config.json
 node whale-bot.js
 ```
 
-### Config options
+### config.json
 
-| Key         | Env var     | Default                  | Description                        |
-|-------------|-------------|--------------------------|------------------------------------|
-| `ckb_rpc`   | `CKB_RPC`   | `http://127.0.0.1:8114`  | CKB node JSON-RPC endpoint         |
-| `bot_token` | `BOT_TOKEN` | *(required)*             | Telegram bot token                 |
-| `chat_id`   | `CHAT_ID`   | *(required)*             | Telegram chat/group ID to alert    |
+```json
+{
+  "ckbNodeUrl": "http://192.168.68.87:8114",
+  "telegramToken": "YOUR_BOT_TOKEN",
+  "telegramChatId": "-1001234567890",
+  "thresholdUsd": 200000,
+  "fallbackThresholdCkb": 10000000
+}
+```
 
-Environment variables take priority over `config.json`.
+`config.json` is gitignored — never committed.
 
-## Running as a service
+---
+
+## Running
 
 ```bash
-# Simple background start
-nohup node whale-bot.js >> whale-bot.log 2>&1 &
+# Direct
+node whale-bot.js
 
-# Or use start.sh if provided
+# Via start script (backgrounds, writes PID file)
 bash start.sh
+
+# Check if running
+ps aux | grep whale-bot | grep -v grep
 ```
+
+---
+
+## Threshold logic
+
+1. Fetches live CKB/USD price from CoinGecko every 5 minutes
+2. Converts `thresholdUsd` to CKB using live price
+3. If CoinGecko is unreachable, uses `fallbackThresholdCkb` directly
+
+---
 
 ## Alert format
 
 ```
-🐋 CKB Whale Alert
+🐋 Whale Alert — 15,420,000 CKB (~$308,400 USD)
 
-17.50M CKB moved on-chain
-
-💰 Total output: 17,500,000 CKB
-📦 Largest output: 15,000,000 CKB
-🔀 Inputs → Outputs: 3 → 2
-📏 Block: 18,500,000
-
-🔗 0x1a2b3c4d5e6f...abc123
+Block: 18,734,521
+TX: 0x1a2b3c...
+Inputs: 3  →  Outputs: 2
 ```
 
-## Threshold
+---
 
-Default: 10,000,000 CKB. Change `WHALE_THRESHOLD` in `whale-bot.js`.
+## Requirements
+
+- CKB full node with RPC accessible
+- Telegram bot token + chat ID
+- Node.js 18+
+
+---
+
+## License
+
+MIT
